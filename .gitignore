@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+!example.tfvars
+!envs/*.tfvars
+.claude/
+.vibe-wise/
+PLAN.md
