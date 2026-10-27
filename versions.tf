@@ -6,6 +6,11 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
+    # Only used to look up this machine's public IP address (a data source, builds nothing).
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.0"
+    }
   }
 }
 

@@ -3,9 +3,9 @@
 
 terraform {
   backend "azurerm" {
-    resource_group_name  = "tr-lab"   # the resource group that holds the storage account
-    storage_account_name = "trlabstate"   # the storage account
-    container_name       = "tfstate"   # the container inside it
-    key                  = "landing-zone.tfstate"   # the name of the state file (a blob), e.g. "landing-zone.tfstate"
+    resource_group_name  = "tr-lab"               # the resource group that holds the storage account
+    storage_account_name = "trlabstate"           # the storage account
+    container_name       = "tfstate"              # the container inside it
+    key                  = "landing-zone.tfstate" # the name of the state file (a blob), e.g. "landing-zone.tfstate"
   }
 }

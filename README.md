@@ -7,8 +7,8 @@ and to prepare for the **HashiCorp Terraform Associate** and **Microsoft AZ-104*
 A companion project, [terraform-kvm-lab](https://github.com/Marian421/terraform-kvm-lab), builds a similar
 four-VM lab on a local KVM/libvirt host. That one taught the Terraform basics; this one applies them to Azure.
 
-**Status:** work in progress. Done so far: provider setup and a remote-state backend (phases 0 and 1 below).
-Nothing else is deployed yet.
+**Status:** work in progress. Done so far: provider setup, a remote-state backend, and hub-and-spoke networking
+with NSGs (phases 0 to 2 below). No VMs yet.
 
 ## How it works so far
 
@@ -30,12 +30,43 @@ bootstrap/  (run once, local state)           main config  (this folder)
   Terraform with `import` blocks. The settings are reproduced in code, and a `plan` after the import showed
   only tag differences.
 
+## Network design
+
+```
+                      vnet-hub 10.0.0.0/16
+                      snet-shared 10.0.0.0/24  (nsg-shared: SSH from my current IP)
+                     /                        \
+        peering (both halves)              peering (both halves)
+                   /                            \
+   vnet-dev 10.1.0.0/16                  vnet-prod 10.2.0.0/16
+   snet-web  10.1.0.0/24                 snet-web  10.2.0.0/24
+   snet-data 10.1.1.0/24                 snet-data 10.2.1.0/24
+   (nsg-dev: SSH from hub range)         (nsg-prod: SSH from hub range)
+```
+
+- **Hub and spokes.** Shared things go in the hub, workloads in a spoke each. Spokes only reach each other through the hub
+  (peering is not transitive).
+- **`modules/network`** builds one VNet plus its subnets. It is called once for the hub and once per spoke with `for_each`.
+  Subnet ranges come from `cidrsubnet(address_space, 8, n)`, so a subnet is just a name and a number.
+- **Spokes are data.** `locals.tf` holds a `spokes` map. Adding a spoke is one more entry: it gets a resource group,
+  a VNet, two peerings and an NSG with no other change.
+- **Peering** is created from both sides (`hub_to_spoke` and `spoke_to_hub`), each pointing at the other VNet by ID.
+- **NSGs** are attached to subnets. The hub NSG allows SSH only from my current public IP, looked up with the `http`
+  data source, so the rule follows my IP when it changes. Spoke NSGs allow SSH from the hub range. The association
+  to every (spoke, subnet) pair uses `flatten()` to build a map for `for_each`.
+- The address ranges never overlap, which peering requires.
+
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `versions.tf` | Terraform and `azurerm` provider pins (`~> 4.0`), provider block |
-| `variables.tf` | Inputs, starting with `subscription_id` |
+| `variables.tf` | Inputs: `subscription_id`, `location` |
+| `locals.tf` | Common tags, hub address range, the `spokes` map |
+| `main.tf` | Resource groups and the network module calls |
+| `modules/network/` | Reusable VNet + subnets module (inputs, outputs `vnet_id`, `vnet_name`, `subnet_ids`) |
+| `peering.tf` | Hub-to-spoke and spoke-to-hub peerings |
+| `nsg.tf` | Network security groups and their subnet associations |
 | `backend.tf` | Remote state location (written out literally: backend blocks cannot use variables) |
 | `bootstrap/` | One-off config that creates the state storage account |
 | `terraform.tfvars` | Holds the subscription id. **Git-ignored** |
@@ -83,6 +114,10 @@ terraform plan
 - **`.gitignore` trap.** Ignoring `*.tfvars` but allowing `envs/*.tfvars` is right for per-environment files, but a
   subscription id put there would be committed. It lives in a top-level `terraform.tfvars` instead.
 - **`lifecycle` is a block, not a map.** `lifecycle: {` fails validation; it is `lifecycle {`.
+- **Name vs ID arguments.** `*_name` wants a name and `*_id` wants the full resource path. Passing a VNet name where
+  an ID is expected fails with "parsing ... as a VirtualNetwork ID". A subnet association needs the subnet ID, not the VNet ID.
+- **NSG default rules.** Rule 65000 `AllowVnetInBound` allows traffic between peered networks and between subnets of
+  the same VNet on every port, so the SSH rule alone does not isolate tiers. A deny rule at a lower priority number is needed.
 - **Terraform stores secrets in state.** The plan shows `primary_access_key` as sensitive, but it is still in the state
   file in plain text, one reason to move to Entra ID authentication and turn key access off.
 
@@ -92,8 +127,8 @@ terraform plan
 |---|---|---|
 | 0 | Account, budget, provider setup | Done |
 | 1 | Remote state in Azure Storage | Done |
-| 2 | Hub-and-spoke networking: VNets, subnets, NSGs, peering | Next |
-| 3 | Compute: Linux VMs, managed disks, load balancer | |
+| 2 | Hub-and-spoke networking: VNets, subnets, NSGs, peering | Done |
+| 3 | Compute: Linux VMs, managed disks, load balancer | Next |
 | 4 | Identity and governance: RBAC, policy, locks, managed identity | |
 | 5 | Monitoring, backup, storage extras | |
 | 6 | Exam preparation | |
@@ -101,3 +136,4 @@ terraform plan
 ## Provider
 
 [`hashicorp/azurerm`](https://registry.terraform.io/providers/hashicorp/azurerm) `~> 4.0`
+and [`hashicorp/http`](https://registry.terraform.io/providers/hashicorp/http) `~> 3.0` (only to look up my public IP)
