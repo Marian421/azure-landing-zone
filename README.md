@@ -8,7 +8,8 @@ A companion project, [terraform-kvm-lab](https://github.com/Marian421/terraform-
 four-VM lab on a local KVM/libvirt host. That one taught the Terraform basics; this one applies them to Azure.
 
 **Status:** work in progress. Done so far: provider setup, a remote-state backend, and hub-and-spoke networking
-with NSGs (phases 0 to 2 below). No VMs yet.
+with NSGs, and two VMs built from one module: a jump host and a private VM in the dev spoke (phases 0 to 2 done,
+phase 3 in progress).
 
 ## How it works so far
 
@@ -56,6 +57,23 @@ bootstrap/  (run once, local state)           main config  (this folder)
   to every (spoke, subnet) pair uses `flatten()` to build a map for `for_each`.
 - The address ranges never overlap, which peering requires.
 
+## Reaching the VMs
+
+```
+laptop --SSH (key, from my current IP only)--> vm-jump  10.0.0.4  (hub, public IP)
+                                                  |
+                                       peering    |  SSH allowed from 10.0.0.0/16
+                                                  v
+                                             vm-dev-web  10.1.0.4  (dev spoke, no public IP)
+```
+
+- `modules/vm` builds a Linux VM, its NIC and, only when `public_ip = true`, a public IP (`count = var.public_ip ? 1 : 0`).
+  It is called twice in `compute.tf`: `jump` (public IP, in the hub) and `dev-web` (private, in the dev spoke).
+- The dev VM has no public address, so it can only be reached through the jump host:
+  `ssh -J azureuser@<jump ip> azureuser@10.1.0.4`. `terraform output jump_ssh_command` prints the first hop.
+- IP flow verify in Network Watcher confirms which NSG rule allows the hop (`allow-ssh-from-hub`).
+- Terraform reads the public key from `var.ssh_public_key_path` in the root and passes the text to the module.
+
 ## Layout
 
 | Path | Purpose |
@@ -67,6 +85,9 @@ bootstrap/  (run once, local state)           main config  (this folder)
 | `modules/network/` | Reusable VNet + subnets module (inputs, outputs `vnet_id`, `vnet_name`, `subnet_ids`) |
 | `peering.tf` | Hub-to-spoke and spoke-to-hub peerings |
 | `nsg.tf` | Network security groups and their subnet associations |
+| `compute.tf` | The two VMs, as calls to `modules/vm` |
+| `modules/vm/` | Reusable VM module (VM, NIC, optional public IP) |
+| `outputs.tf` | Jump host public IP and a ready-to-paste SSH command |
 | `backend.tf` | Remote state location (written out literally: backend blocks cannot use variables) |
 | `bootstrap/` | One-off config that creates the state storage account |
 | `terraform.tfvars` | Holds the subscription id. **Git-ignored** |
@@ -97,8 +118,10 @@ terraform plan
 ## Decisions
 
 - **Region:** `austriaeast`, picked by latency, with the same VM sizes as the nearest alternative.
-- **Quota:** a new subscription starts with **4 vCPUs per region**, which shapes the design: four 1-vCPU VMs at most,
-  dev only, with prod defined in code but not deployed.
+- **Quota and VM size:** a new subscription starts with **4 vCPUs per region**. The 1-vCPU B sizes are not available on
+  this subscription, so the VM size is `Standard_B2ats_v2` (2 vCPUs, 1 GiB). That allows **two VMs at once**: the jump host
+  and one VM in dev. Prod is defined in code but not deployed. The quota counts the full size, even if the portal's
+  "customize cores" cuts a VM to 1 vCPU (tested).
 - **State account:** StorageV2, Standard performance, LRS, Hot tier, blob versioning and 7-day soft delete on,
   HTTPS only, TLS 1.2, anonymous access off, copy scope limited to the same Entra tenant. Account-key access is
   still on and will be replaced by Entra ID (RBAC) access in a later phase.
@@ -118,6 +141,15 @@ terraform plan
   an ID is expected fails with "parsing ... as a VirtualNetwork ID". A subnet association needs the subnet ID, not the VNet ID.
 - **NSG default rules.** Rule 65000 `AllowVnetInBound` allows traffic between peered networks and between subnets of
   the same VNet on every port, so the SSH rule alone does not isolate tiers. A deny rule at a lower priority number is needed.
+- **`ssh -J` does not use `-i` for the jump host.** The first hop failed with `Permission denied (publickey)` because the
+  key is not one of SSH's default names. Fix: load it into an agent (`eval "$(ssh-agent -s)"; ssh-add <key>`), or use a
+  `~/.ssh/config` entry, or an explicit `ProxyCommand`.
+- **Moving resources into a module.** Putting existing resources into a module would have destroyed the VM. `moved` blocks
+  rename them in state instead; after one clean apply they can be deleted.
+- **My IP changes.** The hub NSG rule follows my public IP through the `http` data source, so a changed IP shows up as
+  an in-place update on the next plan.
+- **The portal does not delete a VM's public IP by default.** An orphaned public IP keeps billing; `az resource list -g <rg>`
+  shows what is left.
 - **Terraform stores secrets in state.** The plan shows `primary_access_key` as sensitive, but it is still in the state
   file in plain text, one reason to move to Entra ID authentication and turn key access off.
 
@@ -128,7 +160,7 @@ terraform plan
 | 0 | Account, budget, provider setup | Done |
 | 1 | Remote state in Azure Storage | Done |
 | 2 | Hub-and-spoke networking: VNets, subnets, NSGs, peering | Done |
-| 3 | Compute: Linux VMs, managed disks, load balancer | Next |
+| 3 | Compute: Linux VMs, managed disks, load balancer | In progress (VMs and module done) |
 | 4 | Identity and governance: RBAC, policy, locks, managed identity | |
 | 5 | Monitoring, backup, storage extras | |
 | 6 | Exam preparation | |
