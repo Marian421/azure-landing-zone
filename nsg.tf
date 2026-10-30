@@ -63,6 +63,34 @@ resource "azurerm_network_security_group" "spoke" {
     source_address_prefix      = local.hub_address_space
     destination_address_prefix = "*"
   }
+
+  # Web traffic (port 80) from the hub is allowed. It must have a lower priority NUMBER than the deny
+  # rule, because the first matching rule wins.
+  security_rule {
+    name                       = "allow-http-from-hub"
+    priority                   = 200
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = 80
+    source_address_prefix      = local.hub_address_space
+    destination_address_prefix = "*"
+  }
+
+  # Everything else from inside the virtual network (and its peers) is dropped. The priority 4000
+  # is checked AFTER the SSH rule at 100 and BEFORE Azure's default allow rule at 65000.
+  security_rule {
+    name                       = "deny-vnet-inbound"
+    priority                   = 4000
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "*"
+  }
 }
 
 # The association needs one entry per (spoke, subnet) pair, e.g. dev+snet-web, dev+snet-data, ...

@@ -72,6 +72,9 @@ laptop --SSH (key, from my current IP only)--> vm-jump  10.0.0.4  (hub, public I
 - The dev VM has no public address, so it can only be reached through the jump host:
   `ssh -J azureuser@<jump ip> azureuser@10.1.0.4`. `terraform output jump_ssh_command` prints the first hop.
 - IP flow verify in Network Watcher confirms which NSG rule allows the hop (`allow-ssh-from-hub`).
+- The spoke NSGs follow **deny by default**: allow SSH (100) and HTTP (200) from the hub range, then deny everything else
+  from `VirtualNetwork` (4000), which sits before Azure's default allow rule (65000). Tested with a Python web server on the dev VM:
+  `curl` from the jump host returned 200, then 000 after the deny rule, then 200 again after the HTTP allow.
 - Terraform reads the public key from `var.ssh_public_key_path` in the root and passes the text to the module.
 
 ## Layout
@@ -141,6 +144,10 @@ terraform plan
   an ID is expected fails with "parsing ... as a VirtualNetwork ID". A subnet association needs the subnet ID, not the VNet ID.
 - **NSG default rules.** Rule 65000 `AllowVnetInBound` allows traffic between peered networks and between subnets of
   the same VNet on every port, so the SSH rule alone does not isolate tiers. A deny rule at a lower priority number is needed.
+- **A rule name is a promise.** An HTTP allow that used the `VirtualNetwork` tag instead of the hub range passed every test
+  but let the data subnet reach the web subnet. Rule names and sources have to say the same thing.
+- **Recreated VMs trigger SSH's host key warning.** The private address `10.1.0.4` is reused with a new host key, so
+  `ssh-keygen -R 10.1.0.4` clears the old entry.
 - **`ssh -J` does not use `-i` for the jump host.** The first hop failed with `Permission denied (publickey)` because the
   key is not one of SSH's default names. Fix: load it into an agent (`eval "$(ssh-agent -s)"; ssh-add <key>`), or use a
   `~/.ssh/config` entry, or an explicit `ProxyCommand`.
